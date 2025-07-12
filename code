@@ -1,0 +1,171 @@
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+import serial
+import serial.tools.list_ports
+import threading
+
+class QGNSSApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("QGNSS for PI")
+        self.serial_port = None
+        self.serial_thread = None
+        self.stop_thread = False
+
+        self.build_tabs()
+        self.build_serial_tab()
+        self.build_gnss_tab()
+        self.build_mode_tab()
+        self.build_nmea_tab()
+        self.build_advanced_tab()
+
+    def build_tabs(self):
+        self.tab_control = ttk.Notebook(self.root)
+        self.tab_serial = ttk.Frame(self.tab_control)
+        self.tab_gnss = ttk.Frame(self.tab_control)
+        self.tab_mode = ttk.Frame(self.tab_control)
+        self.tab_nmea = ttk.Frame(self.tab_control)
+        self.tab_advanced = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.tab_serial, text="Serial")
+        self.tab_control.add(self.tab_gnss, text="GNSS")
+        self.tab_control.add(self.tab_mode, text="Mode")
+        self.tab_control.add(self.tab_nmea, text="NMEA Output")
+        self.tab_control.add(self.tab_advanced, text="Advanced")
+        self.tab_control.pack(expand=1, fill="both")
+
+    def build_serial_tab(self):
+        tk.Label(self.tab_serial, text="Select Port:").pack(pady=5)
+        self.port_combo = ttk.Combobox(self.tab_serial, values=self.get_serial_ports(), width=30)
+        self.port_combo.pack()
+
+        tk.Label(self.tab_serial, text="Baud Rate:").pack(pady=5)
+        self.baud_combo = ttk.Combobox(self.tab_serial, values=["115200", "460800"], width=10)
+        self.baud_combo.set("115200")
+        self.baud_combo.pack()
+
+        self.connect_button = tk.Button(self.tab_serial, text="Connect", command=self.connect_serial)
+        self.connect_button.pack(pady=10)
+
+        self.output = scrolledtext.ScrolledText(self.tab_serial, width=80, height=20)
+        self.output.pack(pady=5)
+
+    def build_gnss_tab(self):
+        self.constellations = {
+            "GPS": tk.BooleanVar(),
+            "GAL": tk.BooleanVar(),
+            "BDS": tk.BooleanVar(),
+            "GLO": tk.BooleanVar(),
+            "QZSS": tk.BooleanVar(),
+        }
+        tk.Label(self.tab_gnss, text="Enable/Disable Constellations:").pack()
+        for name, var in self.constellations.items():
+            cb = tk.Checkbutton(self.tab_gnss, text=name, variable=var)
+            cb.pack(anchor="w")
+
+        self.apply_gnss_button = tk.Button(self.tab_gnss, text="Apply GNSS Settings", command=self.apply_gnss_settings)
+        self.apply_gnss_button.pack(pady=10)
+
+    def build_mode_tab(self):
+        tk.Label(self.tab_mode, text="Select Mode:").pack()
+        self.mode_var = tk.StringVar(value="rover")
+        modes = ["rover", "base", "heading2"]
+        for mode in modes:
+            rb = tk.Radiobutton(self.tab_mode, text=mode.capitalize(), variable=self.mode_var, value=mode)
+            rb.pack(anchor="w")
+        self.mode_button = tk.Button(self.tab_mode, text="Set Mode", command=self.set_mode)
+        self.mode_button.pack(pady=10)
+
+    def build_nmea_tab(self):
+        tk.Label(self.tab_nmea, text="NMEA Output (basic example):").pack()
+        self.enable_gga = tk.BooleanVar()
+        cb1 = tk.Checkbutton(self.tab_nmea, text="Enable GGA", variable=self.enable_gga)
+        cb1.pack(anchor="w")
+        self.enable_hdt = tk.BooleanVar()
+        cb2 = tk.Checkbutton(self.tab_nmea, text="Enable HDT", variable=self.enable_hdt)
+        cb2.pack(anchor="w")
+        self.apply_nmea_button = tk.Button(self.tab_nmea, text="Apply NMEA Output", command=self.apply_nmea_output)
+        self.apply_nmea_button.pack(pady=10)
+
+    def build_advanced_tab(self):
+        self.save_button = tk.Button(self.tab_advanced, text="Save All Settings", command=self.save_config)
+        self.save_button.pack(pady=10)
+
+        self.reset_button = tk.Button(self.tab_advanced, text="Factory Reset", command=self.factory_reset)
+        self.reset_button.pack(pady=5)
+
+    def get_serial_ports(self):
+        ports = serial.tools.list_ports.comports()
+        return [port.device for port in ports]
+
+    def connect_serial(self):
+        port = self.port_combo.get()
+        baud = int(self.baud_combo.get())
+        try:
+            self.serial_port = serial.Serial(port, baudrate=baud, timeout=1)
+            self.output.insert(tk.END, f"Connected to {port} at {baud} baud\n")
+            self.start_serial_thread()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def start_serial_thread(self):
+        self.stop_thread = False
+        self.serial_thread = threading.Thread(target=self.read_serial)
+        self.serial_thread.daemon = True
+        self.serial_thread.start()
+
+    def read_serial(self):
+        while not self.stop_thread and self.serial_port and self.serial_port.is_open:
+            try:
+                line = self.serial_port.readline().decode(errors='ignore').strip()
+                if line:
+                    self.output.insert(tk.END, line + "\n")
+                    self.output.see(tk.END)
+            except:
+                pass
+
+    def send_command(self, cmd):
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.write((cmd + "\r\n").encode())
+            self.output.insert(tk.END, f"> {cmd}\n")
+            self.output.see(tk.END)
+
+    def apply_gnss_settings(self):
+        for name, var in self.constellations.items():
+            cmd = f"unmask {name}" if var.get() else f"mask {name}"
+            self.send_command(cmd)
+
+    def set_mode(self):
+        mode = self.mode_var.get()
+        if mode == "base":
+            self.send_command("mode base 0 0 0")
+        else:
+            self.send_command(f"mode {mode}")
+
+    def apply_nmea_output(self):
+        if self.enable_gga.get():
+            self.send_command("log com1 gpgga ontime 1")
+        else:
+            self.send_command("unlog com1 gpgga")
+
+        if self.enable_hdt.get():
+            self.send_command("log com1 gphdt ontime 1")
+        else:
+            self.send_command("unlog com1 gphdt")
+
+    def save_config(self):
+        self.send_command("saveconfig")
+
+    def factory_reset(self):
+        self.send_command("freset")
+
+    def on_close(self):
+        self.stop_thread = True
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = QGNSSApp(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
+    root.mainloop()
